@@ -1,3 +1,11 @@
 *.npy
 *.pkl
 *.txt
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# Tool directories
+.claude/
