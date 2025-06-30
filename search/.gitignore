@@ -3,9 +3,6 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Tool directories
-.claude/
-
 # Ignore binary data files but keep results and plots
 results/data/*.pickle
 results/data/*.npy
