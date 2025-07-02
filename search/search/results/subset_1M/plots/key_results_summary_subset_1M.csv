@@ -1,0 +1,11 @@
+method,k,qps,recall,query_time_ms,speedup_vs_flat,configuration
+Flat Search,1,4.79,1.0,208.68,1.0,Exhaustive search
+Flat Search,5,4.83,1.0,207.04,1.0,Exhaustive search
+Flat Search,10,4.83,1.0,206.92,1.0,Exhaustive search
+Flat Search,50,4.83,1.0,207.06,1.0,Exhaustive search
+Flat Search,100,4.83,1.0,207.01,1.0,Exhaustive search
+IVF Search (Best),1,18.39,0.96,54.37,3.84,n_probe=64
+IVF Search (Best),5,18.27,0.955,54.73,3.78,n_probe=64
+IVF Search (Best),10,18.26,0.955,54.78,3.78,n_probe=64
+IVF Search (Best),50,18.31,0.955,54.61,3.79,n_probe=64
+IVF Search (Best),100,17.97,0.955,55.64,3.72,n_probe=64

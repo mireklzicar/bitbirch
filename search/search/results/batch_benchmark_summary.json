@@ -1,0 +1,89 @@
+{
+  "timestamp": "2025-07-02T16:14:54.990183",
+  "total_benchmarks": 3,
+  "successful_benchmarks": 3,
+  "failed_benchmarks": 0,
+  "total_runtime": 3493.9717967510223,
+  "benchmark_details": [
+    {
+      "dataset": "subset_10k",
+      "dataset_size": "10000",
+      "n_queries": "100",
+      "runtime": 8.206872940063477,
+      "timing_breakdown": {
+        "load_cached_data": 0.39358997344970703,
+        "select_queries": 0.007158994674682617,
+        "compute_ground_truth": 0.006861209869384766,
+        "load_cached_ivf_index": null,
+        "flat_search_rdkit": 1.5658390522003174,
+        "ivf_search_rdkit": 1.5706980228424072
+      },
+      "memory_usage": {
+        "load_cached_data": {
+          "rss_mb": 356.203125,
+          "vms_mb": 403239.375
+        },
+        "compute_ground_truth": {
+          "rss_mb": 358.0,
+          "vms_mb": 403239.625
+        }
+      },
+      "performance_metrics": {}
+    },
+    {
+      "dataset": "subset_100k",
+      "dataset_size": "100000",
+      "n_queries": "100",
+      "runtime": 26.68884587287903,
+      "timing_breakdown": {
+        "load_cached_data": 2.062279224395752,
+        "select_queries": 0.007477998733520508,
+        "compute_ground_truth": 0.008060216903686523,
+        "load_cached_ivf_index": null,
+        "flat_search_rdkit": 10.446033954620361,
+        "ivf_search_rdkit": 10.250754833221436
+      },
+      "memory_usage": {
+        "load_cached_data": {
+          "rss_mb": 1855.640625,
+          "vms_mb": 404710.390625
+        },
+        "compute_ground_truth": {
+          "rss_mb": 1855.8125,
+          "vms_mb": 404710.640625
+        }
+      },
+      "performance_metrics": {}
+    },
+    {
+      "dataset": "subset_1M",
+      "dataset_size": "1000000",
+      "n_queries": "100",
+      "runtime": 3459.07607793808,
+      "timing_breakdown": {
+        "load_cached_data": 19.327871084213257,
+        "select_queries": 0.007175922393798828,
+        "compute_ground_truth": 0.01455998420715332,
+        "build_ivf_index": 3237.4521522521973,
+        "save_ivf_index": 41.316967248916626,
+        "flat_search_rdkit": 104.29583477973938,
+        "ivf_search_rdkit": 54.36227989196777
+      },
+      "memory_usage": {
+        "load_cached_data": {
+          "rss_mb": 5429.734375,
+          "vms_mb": 419535.6875
+        },
+        "compute_ground_truth": {
+          "rss_mb": 5438.203125,
+          "vms_mb": 419535.9375
+        },
+        "build_ivf_index": {
+          "rss_mb": 13973.046875,
+          "vms_mb": 451714.84375
+        }
+      },
+      "performance_metrics": {}
+    }
+  ]
+}

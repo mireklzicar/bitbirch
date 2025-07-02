@@ -13,6 +13,10 @@ def load_smiles_file(file_path: str) -> List[str]:
     """
     Load SMILES from a file.
     
+    Supports both .smi and .csv formats:
+    - .smi: Space-separated format (SMILES in first column)
+    - .csv: Comma-separated format (SMILES in first column)
+    
     Args:
         file_path: Path to SMILES file
         
@@ -27,23 +31,34 @@ def load_smiles_file(file_path: str) -> List[str]:
         lines = f.readlines()
         smiles = []
         
+        # Detect file format based on extension
+        is_csv = file_path.lower().endswith('.csv')
+        
         for line in lines:
             line = line.strip()
             if not line:
                 continue
                 
-            # Try to extract SMILES from the line
-            parts = line.split()
-            if parts:
-                smiles.append(parts[0])  # Assume first column is SMILES
+            # Extract SMILES from the line based on format
+            if is_csv:
+                # CSV format: split by comma and take first column
+                parts = line.split(',')
+                if parts:
+                    smiles.append(parts[0])  # First column is SMILES
+            else:
+                # SMI format: split by whitespace and take first column
+                parts = line.split()
+                if parts:
+                    smiles.append(parts[0])  # First column is SMILES
                 
     return smiles
 
 def generate_fingerprints(
     smiles: List[str], 
     fp_type: str = 'morgan', 
-    fp_params: Dict[str, Any] = None
-) -> np.ndarray:
+    fp_params: Dict[str, Any] = None,
+    sparse: bool = False
+) -> Union[np.ndarray, Any]:
     """
     Generate fingerprints from SMILES.
     
@@ -51,12 +66,14 @@ def generate_fingerprints(
         smiles: List of SMILES strings
         fp_type: Type of fingerprint ('morgan', 'rdkit', etc.)
         fp_params: Parameters for fingerprint generation
+        sparse: Whether to return sparse matrix (memory efficient) or dense numpy array (default: False)
         
     Returns:
-        NumPy array of fingerprints
+        Sparse matrix (if sparse=True) or NumPy array of fingerprints
     """
     from rdkit import Chem
     from rdkit.Chem import AllChem
+    from scipy import sparse as sp
     
     if fp_params is None:
         if fp_type.lower() == 'morgan':
@@ -70,36 +87,81 @@ def generate_fingerprints(
     mols = [Chem.MolFromSmiles(s) for s in smiles]
     mols = [m for m in mols if m is not None]  # Filter out None values
     
-    # Generate fingerprints
-    fingerprints = []
+    # Determine fingerprint size
+    fp_size = fp_params.get('nBits', fp_params.get('fpSize', 2048))
     
-    if fp_type.lower() == 'morgan':
-        fingerprints = np.array([
-            np.array(AllChem.GetMorganFingerprintAsBitVect(
-                mol, 
-                fp_params.get('radius', 2), 
-                nBits=fp_params.get('nBits', 2048)
-            )) 
-            for mol in mols
-        ])
-    elif fp_type.lower() == 'rdkit':
-        fingerprints = np.array([
-            np.array(Chem.RDKFingerprint(
-                mol,
+    if sparse:
+        # Build sparse matrix directly without creating dense arrays
+        rows, cols = [], []
+        
+        if fp_type.lower() == 'morgan':
+            # Use modern MorganGenerator
+            from rdkit.Chem import rdFingerprintGenerator
+            mgen = rdFingerprintGenerator.GetMorganGenerator(
+                radius=fp_params.get('radius', 2),
+                fpSize=fp_params.get('nBits', 2048)
+            )
+            for mol_idx, mol in enumerate(mols):
+                fp = mgen.GetFingerprint(mol)
+                # Get the indices of set bits directly from RDKit
+                on_bits = fp.GetOnBits()
+                rows.extend([mol_idx] * len(on_bits))
+                cols.extend(on_bits)
+                
+        elif fp_type.lower() == 'rdkit':
+            # Use modern RDKitFPGenerator
+            from rdkit.Chem import rdFingerprintGenerator
+            rdgen = rdFingerprintGenerator.GetRDKitFPGenerator(
                 fpSize=fp_params.get('fpSize', 2048)
-            ))
-            for mol in mols
-        ])
+            )
+            for mol_idx, mol in enumerate(mols):
+                fp = rdgen.GetFingerprint(mol)
+                # Get the indices of set bits directly from RDKit
+                on_bits = fp.GetOnBits()
+                rows.extend([mol_idx] * len(on_bits))
+                cols.extend(on_bits)
+        else:
+            raise ValueError(f"Unsupported fingerprint type: {fp_type}")
+        
+        # Create sparse matrix - much more memory efficient!
+        data = np.ones(len(rows), dtype=np.uint8)  # All set bits are 1
+        fingerprints = sp.csr_matrix((data, (rows, cols)), shape=(len(mols), fp_size), dtype=np.uint8)
     else:
-        raise ValueError(f"Unsupported fingerprint type: {fp_type}")
+        # Original dense array approach for backward compatibility
+        fingerprints = []
+        
+        if fp_type.lower() == 'morgan':
+            # Use modern MorganGenerator
+            from rdkit.Chem import rdFingerprintGenerator
+            mgen = rdFingerprintGenerator.GetMorganGenerator(
+                radius=fp_params.get('radius', 2),
+                fpSize=fp_params.get('nBits', 2048)
+            )
+            fingerprints = np.array([
+                np.array(mgen.GetFingerprint(mol)) 
+                for mol in mols
+            ])
+        elif fp_type.lower() == 'rdkit':
+            # Use modern RDKitFPGenerator
+            from rdkit.Chem import rdFingerprintGenerator
+            rdgen = rdFingerprintGenerator.GetRDKitFPGenerator(
+                fpSize=fp_params.get('fpSize', 2048)
+            )
+            fingerprints = np.array([
+                np.array(rdgen.GetFingerprint(mol))
+                for mol in mols
+            ])
+        else:
+            raise ValueError(f"Unsupported fingerprint type: {fp_type}")
         
     return fingerprints
 
 def load_fingerprints(
     file_path: str,
     fp_type: str = 'morgan',
-    fp_params: Dict[str, Any] = None
-) -> Tuple[np.ndarray, List[str]]:
+    fp_params: Dict[str, Any] = None,
+    sparse: bool = False
+) -> Tuple[Union[np.ndarray, Any], List[str]]:
     """
     Load SMILES and generate fingerprints.
     
@@ -107,52 +169,15 @@ def load_fingerprints(
         file_path: Path to SMILES file
         fp_type: Type of fingerprint ('morgan', 'rdkit', etc.)
         fp_params: Parameters for fingerprint generation
+        sparse: Whether to return sparse matrix (memory efficient) or dense numpy array (default: False)
         
     Returns:
         Tuple of (fingerprints, smiles)
     """
     smiles = load_smiles_file(file_path)
-    fingerprints = generate_fingerprints(smiles, fp_type, fp_params)
+    fingerprints = generate_fingerprints(smiles, fp_type, fp_params, sparse=sparse)
     
     return fingerprints, smiles
-
-def tanimoto_similarity(fp1: np.ndarray, fp2: np.ndarray) -> float:
-    """
-    Calculate Tanimoto similarity between two fingerprints.
-    
-    Args:
-        fp1: First fingerprint
-        fp2: Second fingerprint
-        
-    Returns:
-        Tanimoto similarity score
-    """
-    # Check if fingerprints are binary
-    if not (set(np.unique(fp1)).issubset({0, 1}) and set(np.unique(fp2)).issubset({0, 1})):
-        raise ValueError("Fingerprints must be binary (0 or 1)")
-        
-    intersection = np.sum(fp1 & fp2)
-    union = np.sum(fp1 | fp2)
-    
-    if union == 0:
-        return 1.0  # Both fingerprints are all zeros
-        
-    return intersection / union
-
-def bulk_tanimoto_similarity(query_fp: np.ndarray, target_fps: np.ndarray) -> np.ndarray:
-    """
-    Calculate Tanimoto similarities between a query and multiple targets.
-    
-    Args:
-        query_fp: Query fingerprint
-        target_fps: Target fingerprints
-        
-    Returns:
-        Array of Tanimoto similarity scores
-    """
-    # This is a simple implementation, prefer using RDKit's BulkTanimotoSimilarity
-    # for better performance in production
-    return np.array([tanimoto_similarity(query_fp, fp) for fp in target_fps])
 
 def create_fpsim2_db(
     smiles_file: str,

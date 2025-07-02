@@ -13,3 +13,6 @@ results/data/*.npy
 # Keep other files in results
 !results/data/*.json
 !results/plots/
+
+*.pickle
+**/smiles.json

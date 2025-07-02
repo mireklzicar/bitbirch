@@ -27,6 +27,7 @@
 import numpy as np
 from scipy import sparse
 from bitbirch.pruning import lazyPrune
+from sklearn.cluster import KMeans, AgglomerativeClustering
 
 def set_merge(merge_criterion, tolerance=0.05):
     """
@@ -1038,4 +1039,90 @@ class BitBirch():
                 cluster.mol_indices = c_ids
                 cluster.centroid_ = calc_centroid(cluster.linear_sum_, cluster.n_samples_)
         return self
+
+    def fit_with_k_clusters(
+        self,
+        X,
+        n_clusters: int,
+        *,
+        global_clustering: str = "kmeans",
+        **gc_kwargs,
+    ):
+        """
+        Build the BitBIRCH tree (Phase 1) and then collapse the leaf
+        sub-clusters to exactly `n_clusters` final clusters (Phase 3).
+        Author: Miroslav Lžičař
+
+        Parameters
+        ----------
+        X : {array-like, sparse matrix}, shape (n_samples, n_features)
+            Input data.
+        n_clusters : int
+            Desired number of final clusters.
+        global_clustering : {'kmeans', 'agglomerative'}, default='kmeans'
+            Algorithm used for the Phase 3 global clustering step.
+        gc_kwargs : dict
+            Extra keyword arguments forwarded to the scikit-learn
+            estimator that performs Phase 3 (e.g. `random_state=0`).
+
+        Notes
+        -----
+        • Phase 2 (tree compression) is still skipped.  
+        • Phase 4 (refinement) remains available through `reassign()`.
+        """
+        # ---------- Phase 1: build the CF-tree ----------
+        self.fit(X)                      # existing BitBirch.fit()
+
+        # ---------- Phase 3: cluster the leaf centroids ----------
+        centroids = np.vstack(self.get_centroids())
+        if len(centroids) < n_clusters:
+            raise ValueError(
+                f"Requested {n_clusters} clusters but the tree has only "
+                f"{len(centroids)} leaf centroids – decrease K or the "
+                f"threshold."
+            )
+
+        if global_clustering == "kmeans":
+            gc = KMeans(n_clusters=n_clusters, **gc_kwargs)
+        elif global_clustering == "agglomerative":
+            gc = AgglomerativeClustering(n_clusters=n_clusters, **gc_kwargs)
+        else:
+            raise ValueError("global_clustering must be 'kmeans' or 'agglomerative'")
+
+        labels_centroids = gc.fit_predict(centroids)
+
+        # ---------- Re-assign each molecule ----------
+        # Build a lookup table: leaf-subcluster → final K label
+        leaves = self._get_leaves()
+        flat_subclusters = [sc for leaf in leaves for sc in leaf.subclusters_]
+        assert len(flat_subclusters) == len(labels_centroids)
+
+        leaf_to_k = {
+            id(sc): k for sc, k in zip(flat_subclusters, labels_centroids)
+        }
+
+        self._final_k_labels_ = np.full(self.index_tracker, -1, dtype=int)
+        for sc in flat_subclusters:
+            k = leaf_to_k[id(sc)]
+            self._final_k_labels_[sc.mol_indices] = k
+
+        # Sanity check – every molecule assigned
+        if (self._final_k_labels_ == -1).any():
+            raise RuntimeError("Some molecules were not assigned to a final cluster")
+
+        self.n_final_clusters_ = n_clusters
+        return self
+
+    def get_final_labels(self):
+        """
+        Get the final cluster labels after fit_with_k_clusters().
+        
+        Returns
+        -------
+        labels : ndarray of shape (n_samples,)
+            Cluster labels for each data point.
+        """
+        if not hasattr(self, '_final_k_labels_'):
+            raise ValueError("Must call fit_with_k_clusters() first")
+        return self._final_k_labels_
             

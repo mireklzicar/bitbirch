@@ -14,7 +14,9 @@ from typing import List, Dict, Tuple, Union, Optional
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from bitbirch.bitbirch import BitBirch, set_merge
+from bitbirch.bitbirch import BitBirch, set_merge, calc_centroid
+from bitbirch.cluster_control import calculate_medoid, calculate_comp_sim
+from sklearn.cluster import KMeans, AgglomerativeClustering
 
 
 class IVFIndex:
@@ -39,7 +41,7 @@ class IVFIndex:
     
     def __init__(
         self, 
-        n_clusters: Optional[int] = None, 
+        n_clusters: int, 
         similarity_method: str = 'rdkit',
         threshold: float = 0.7, 
         branching_factor: int = 50
@@ -48,11 +50,14 @@ class IVFIndex:
         Initialize the IVF index.
         
         Args:
-            n_clusters: Number of clusters to use. If None, uses sqrt(n_samples)
+            n_clusters: Number of clusters to use (required)
             similarity_method: Method for similarity calculations ('rdkit' or 'fpsim2')
-            threshold: Similarity threshold for BitBIRCH clustering
+            threshold: Similarity threshold for BitBIRCH clustering (used only for tree building)
             branching_factor: Branching factor for BitBIRCH clustering
         """
+        if n_clusters <= 0:
+            raise ValueError("n_clusters must be a positive integer")
+        
         self.n_clusters = n_clusters
         self.similarity_method = similarity_method.lower()
         self.threshold = threshold
@@ -87,22 +92,34 @@ class IVFIndex:
         self.fingerprints_rdkit = fingerprints_rdkit
         self.smiles = smiles
         
-        # Determine number of clusters if not specified
-        if self.n_clusters is None:
-            self.n_clusters = int(math.sqrt(n_samples))
-            print(f"Using {self.n_clusters} clusters (sqrt of {n_samples} samples)")
-            
+        # Always use k-clusters functionality since n_clusters is required
+        print(f"Clustering {n_samples} fingerprints into exactly {self.n_clusters} clusters...")
+        
         # Initialize BitBIRCH for clustering
         set_merge('diameter')  # Using diameter merge criterion
         birch = BitBirch(threshold=self.threshold, branching_factor=self.branching_factor)
         
-        # Fit BitBIRCH to fingerprints
-        print(f"Clustering {n_samples} fingerprints into {self.n_clusters} clusters...")
-        birch.fit(fingerprints)
+        # Use the k-clusters functionality (n_clusters is always specified)
+        birch.fit_with_k_clusters(fingerprints, n_clusters=self.n_clusters, global_clustering='kmeans', random_state=42)
+        cluster_ids = birch.get_final_labels()
         
         # Extract cluster information
-        cluster_ids = birch.get_assignments(n_mols=n_samples)
         unique_clusters = np.unique(cluster_ids)
+        
+        # Validate cluster assignments
+        if len(cluster_ids) != n_samples:
+            raise ValueError(f"Cluster assignment length {len(cluster_ids)} doesn't match sample count {n_samples}")
+        
+        # Ensure all molecules are assigned to clusters
+        unassigned = np.where(cluster_ids == -1)[0]
+        if len(unassigned) > 0:
+            print(f"Warning: {len(unassigned)} molecules were not assigned to clusters, assigning to new clusters")
+            # Assign unassigned molecules to their own clusters
+            next_cluster_id = max(unique_clusters) + 1 if len(unique_clusters) > 0 else 0
+            for idx in unassigned:
+                cluster_ids[idx] = next_cluster_id
+                next_cluster_id += 1
+            unique_clusters = np.unique(cluster_ids)
         
         # Calculate centroids and organize members
         print(f"Found {len(unique_clusters)} unique clusters")
@@ -119,14 +136,140 @@ class IVFIndex:
             # Get fingerprints in this cluster
             cluster_fps = fingerprints[member_indices]
             
-            # Calculate centroid (use actual centroid or pick medoid)
-            # For now, use first fingerprint as representative (will be improved)
-            self.cluster_centroids.append(cluster_fps[0])
+            # Calculate centroid using BitBIRCH's method
+            cluster_size = cluster_fps.shape[0] if hasattr(cluster_fps, 'shape') else len(cluster_fps)
+            if cluster_size > 1:
+                # Use BitBIRCH's calc_centroid function: threshold at 0.5 for binary centroids
+                linear_sum = np.sum(cluster_fps, axis=0)
+                # Handle sparse matrix sum result
+                if hasattr(linear_sum, 'A1'):  # sparse matrix result
+                    linear_sum = linear_sum.A1  # convert to 1D array
+                centroid_binary = calc_centroid(linear_sum, cluster_size)
+                self.cluster_centroids.append(centroid_binary)
+            else:
+                # Single member cluster - use the fingerprint itself
+                if hasattr(cluster_fps, 'toarray'):  # sparse matrix
+                    self.cluster_centroids.append(cluster_fps[0].toarray().flatten())
+                else:
+                    self.cluster_centroids.append(cluster_fps[0])
             
-            # Also store RDKit format if available
+            # For RDKit format, use medoid (most representative fingerprint) using BitBIRCH's method
             if self.fingerprints_rdkit is not None:
-                representative_idx = member_indices[0]
-                self.cluster_centroids_rdkit.append(self.fingerprints_rdkit[representative_idx])
+                if len(member_indices) > 1:
+                    # Convert sparse to dense for medoid calculation if needed
+                    if hasattr(cluster_fps, 'toarray'):
+                        cluster_fps_dense = cluster_fps.toarray()
+                    else:
+                        cluster_fps_dense = cluster_fps
+                    # Use BitBIRCH's calculate_medoid function
+                    medoid_local_idx = calculate_medoid(cluster_fps_dense)
+                    medoid_idx = member_indices[medoid_local_idx]
+                    self.cluster_centroids_rdkit.append(self.fingerprints_rdkit[medoid_idx])
+                else:
+                    # Single member cluster
+                    self.cluster_centroids_rdkit.append(self.fingerprints_rdkit[member_indices[0]])
+            
+        # Convert centroids to numpy array
+        self.cluster_centroids = np.array(self.cluster_centroids)
+        
+        self.built = True
+        print(f"IVF index built with {len(self.cluster_centroids)} clusters")
+
+    def build_index_with_global_clustering(
+        self, 
+        fingerprints: np.ndarray,
+        smiles: Optional[List[str]] = None, 
+        fingerprints_rdkit: Optional[List] = None,
+        global_clustering: str = 'kmeans',
+        **gc_kwargs
+    ) -> None:
+        """
+        Build the IVF index using specified global clustering algorithm.
+        
+        Args:
+            fingerprints: Binary fingerprints of shape (n_samples, n_features)
+            smiles: Optional list of SMILES strings corresponding to fingerprints
+            fingerprints_rdkit: Optional list of RDKit ExplicitBitVect objects for performance
+            global_clustering: Algorithm for Phase 3 clustering ('kmeans' or 'agglomerative')
+            gc_kwargs: Additional arguments for the global clustering algorithm
+        """
+        n_samples = fingerprints.shape[0]
+        
+        # Store fingerprints and smiles for later use
+        self.fingerprints = fingerprints
+        self.fingerprints_rdkit = fingerprints_rdkit
+        self.smiles = smiles
+        
+        # Always use k-clusters functionality with custom global clustering
+        print(f"Clustering {n_samples} fingerprints into exactly {self.n_clusters} clusters using {global_clustering}...")
+        
+        # Initialize BitBIRCH for clustering
+        set_merge('diameter')  # Using diameter merge criterion
+        birch = BitBirch(threshold=self.threshold, branching_factor=self.branching_factor)
+        
+        # Use the k-clusters functionality with specified algorithm
+        birch.fit_with_k_clusters(fingerprints, n_clusters=self.n_clusters, global_clustering=global_clustering, **gc_kwargs)
+        cluster_ids = birch.get_final_labels()
+        
+        # Extract cluster information
+        unique_clusters = np.unique(cluster_ids)
+        
+        # Validate cluster assignments
+        if len(cluster_ids) != n_samples:
+            raise ValueError(f"Cluster assignment length {len(cluster_ids)} doesn't match sample count {n_samples}")
+        
+        # Ensure all molecules are assigned to clusters
+        unassigned = np.where(cluster_ids == -1)[0]
+        if len(unassigned) > 0:
+            raise RuntimeError(f"Fatal: {len(unassigned)} molecules were not assigned to clusters in k-clusters mode")
+        
+        # Calculate centroids and organize members
+        print(f"Found {len(unique_clusters)} unique clusters")
+        self.cluster_centroids = []
+        self.cluster_members = {}
+        
+        # Get centroids and member indices for each cluster
+        self.cluster_centroids_rdkit = []
+        for cluster_id in unique_clusters:
+            # Get indices of fingerprints in this cluster
+            member_indices = np.where(cluster_ids == cluster_id)[0]
+            self.cluster_members[cluster_id] = member_indices
+            
+            # Get fingerprints in this cluster
+            cluster_fps = fingerprints[member_indices]
+            
+            # Calculate centroid using BitBIRCH's method
+            cluster_size = cluster_fps.shape[0] if hasattr(cluster_fps, 'shape') else len(cluster_fps)
+            if cluster_size > 1:
+                # Use BitBIRCH's calc_centroid function: threshold at 0.5 for binary centroids
+                linear_sum = np.sum(cluster_fps, axis=0)
+                # Handle sparse matrix sum result
+                if hasattr(linear_sum, 'A1'):  # sparse matrix result
+                    linear_sum = linear_sum.A1  # convert to 1D array
+                centroid_binary = calc_centroid(linear_sum, cluster_size)
+                self.cluster_centroids.append(centroid_binary)
+            else:
+                # Single member cluster - use the fingerprint itself
+                if hasattr(cluster_fps, 'toarray'):  # sparse matrix
+                    self.cluster_centroids.append(cluster_fps[0].toarray().flatten())
+                else:
+                    self.cluster_centroids.append(cluster_fps[0])
+            
+            # For RDKit format, use medoid (most representative fingerprint) using BitBIRCH's method
+            if self.fingerprints_rdkit is not None:
+                if len(member_indices) > 1:
+                    # Convert sparse to dense for medoid calculation if needed
+                    if hasattr(cluster_fps, 'toarray'):
+                        cluster_fps_dense = cluster_fps.toarray()
+                    else:
+                        cluster_fps_dense = cluster_fps
+                    # Use BitBIRCH's calculate_medoid function
+                    medoid_local_idx = calculate_medoid(cluster_fps_dense)
+                    medoid_idx = member_indices[medoid_local_idx]
+                    self.cluster_centroids_rdkit.append(self.fingerprints_rdkit[medoid_idx])
+                else:
+                    # Single member cluster
+                    self.cluster_centroids_rdkit.append(self.fingerprints_rdkit[member_indices[0]])
             
         # Convert centroids to numpy array
         self.cluster_centroids = np.array(self.cluster_centroids)
@@ -147,7 +290,12 @@ class IVFIndex:
         """
         from rdkit import DataStructs
         import numpy as np
+        import time
         
+        # Limit n_probe to available clusters
+        n_probe = min(n_probe, len(self.cluster_centroids))
+        
+        t1 = time.time()
         # Use RDKit fingerprints directly if available
         if (hasattr(self, 'cluster_centroids_rdkit') and 
             self.cluster_centroids_rdkit and 
@@ -179,12 +327,21 @@ class IVFIndex:
             # Calculate similarities to all centroids
             similarities = list(DataStructs.BulkTanimotoSimilarity(query_bitvect, centroid_bitvects))
         
+        centroid_sim_time = time.time() - t1
+        
+        t2 = time.time()
         # Get indices of top n_probe most similar centroids
         top_indices = np.argsort(similarities)[-n_probe:][::-1]  # Sort descending
         
-        # Map index to cluster ID
+        # Map index to cluster ID - fix the mapping!
         cluster_ids = list(self.cluster_members.keys())
         nearest_clusters = [cluster_ids[idx] for idx in top_indices]
+        
+        sort_time = time.time() - t2
+        
+        print(f"  Cluster finding details:")
+        print(f"    Centroid similarities: {centroid_sim_time*1000:.2f}ms (vs {len(self.cluster_centroids)} centroids)")
+        print(f"    Sorting/mapping: {sort_time*1000:.2f}ms")
         
         return nearest_clusters
     
@@ -210,18 +367,25 @@ class IVFIndex:
                 - 'similarity': Tanimoto similarity to query
                 - 'smiles': SMILES string (if available)
         """
+        import time
+        
         if not self.built:
             raise RuntimeError("Index has not been built. Call build_index first.")
             
         # Find nearest clusters
+        t1 = time.time()
         nearest_clusters = self._find_nearest_clusters(query_fp, n_probe)
+        cluster_time = time.time() - t1
         
         # Get indices of fingerprints in the selected clusters
+        t2 = time.time()
         candidate_indices = []
         for cluster_id in nearest_clusters:
             candidate_indices.extend(self.cluster_members[cluster_id])
+        gather_time = time.time() - t2
             
         # Calculate similarities based on method and available formats
+        t3 = time.time()
         if self.similarity_method == 'rdkit':
             from rdkit import DataStructs
             
@@ -287,8 +451,11 @@ class IVFIndex:
                     
             # Calculate similarities
             similarities = list(DataStructs.BulkTanimotoSimilarity(query_bitvect, candidate_bitvects))
-            
+        
+        sim_time = time.time() - t3
+        
         # Apply threshold filter
+        t4 = time.time()
         if threshold > 0.0:
             valid_indices = [i for i, sim in enumerate(similarities) if sim >= threshold]
             similarities = [similarities[i] for i in valid_indices]
@@ -310,5 +477,16 @@ class IVFIndex:
                 result['smiles'] = self.smiles[candidate_indices[idx]]
                 
             results.append(result)
+        
+        post_time = time.time() - t4
+        
+        # Print timing breakdown
+        total_time = cluster_time + gather_time + sim_time + post_time
+        print(f"IVF Search timing breakdown:")
+        print(f"  Find clusters: {cluster_time*1000:.2f}ms ({cluster_time/total_time*100:.1f}%)")
+        print(f"  Gather candidates: {gather_time*1000:.2f}ms ({gather_time/total_time*100:.1f}%)")
+        print(f"  Similarity calc: {sim_time*1000:.2f}ms ({sim_time/total_time*100:.1f}%)")
+        print(f"  Post-processing: {post_time*1000:.2f}ms ({post_time/total_time*100:.1f}%)")
+        print(f"  Total: {total_time*1000:.2f}ms, candidates: {len(candidate_indices)}")
             
         return results

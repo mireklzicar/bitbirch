@@ -1,0 +1,8 @@
+{
+  "load_cached_data": 0.39358997344970703,
+  "select_queries": 0.007158994674682617,
+  "compute_ground_truth": 0.006861209869384766,
+  "load_cached_ivf_index": null,
+  "flat_search_rdkit": 1.5658390522003174,
+  "ivf_search_rdkit": 1.5706980228424072
+}

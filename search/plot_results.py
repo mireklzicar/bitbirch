@@ -271,13 +271,80 @@ def plot_ivf_results(results, output_dir):
     plt.savefig(lower_plot_path, dpi=300, bbox_inches='tight')
     plt.close()
     
+    # Create new plot: QPS and Average Query Time vs Recall
+    fig_qps_time, (ax_qps, ax_time) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    largest_k = k_values[-1]
+    recall_vals = []
+    qps_vals = []
+    avg_time_vals = []
+    
+    for i, n_probe in enumerate(n_probe_values):
+        qps = method_results[str(largest_k)][str(n_probe)]['qps']
+        recall = method_results[str(largest_k)][str(n_probe)]['avg_recall']
+        avg_time = method_results[str(largest_k)][str(n_probe)]['avg_query_time'] * 1000  # Convert to ms
+        
+        recall_vals.append(recall)
+        qps_vals.append(qps)
+        avg_time_vals.append(avg_time)
+        
+        color = colors[i % len(colors)]
+        
+        # QPS vs Recall
+        ax_qps.scatter([recall], [qps], s=100, c=color, marker='s', 
+                      label=f'IVF (n_probe={n_probe})')
+        
+        # Average Time vs Recall  
+        ax_time.scatter([recall], [avg_time], s=100, c=color, marker='s',
+                       label=f'IVF (n_probe={n_probe})')
+    
+    # Draw connecting lines
+    if len(recall_vals) > 1:
+        sorted_data_qps = sorted(zip(recall_vals, qps_vals))
+        sorted_recalls_qps, sorted_qps = zip(*sorted_data_qps)
+        ax_qps.plot(sorted_recalls_qps, sorted_qps, 'b--', alpha=0.6, linewidth=2, label='IVF Curve')
+        
+        sorted_data_time = sorted(zip(recall_vals, avg_time_vals))
+        sorted_recalls_time, sorted_times = zip(*sorted_data_time)
+        ax_time.plot(sorted_recalls_time, sorted_times, 'b--', alpha=0.6, linewidth=2, label='IVF Curve')
+    
+    # Add flat search reference points
+    if flat_results and method in flat_results:
+        flat_qps = flat_results[method][str(largest_k)]['qps']
+        flat_time = flat_results[method][str(largest_k)]['avg_query_time'] * 1000  # Convert to ms
+        
+        ax_qps.scatter([1.0], [flat_qps], s=150, c='black', marker='o', 
+                      label='Flat Search', edgecolors='white', linewidth=2)
+        ax_time.scatter([1.0], [flat_time], s=150, c='black', marker='o',
+                       label='Flat Search', edgecolors='white', linewidth=2)
+    
+    # Configure QPS plot
+    ax_qps.set_xlabel('Recall')
+    ax_qps.set_ylabel('Queries Per Second (QPS)')
+    ax_qps.set_title(f'QPS vs Recall (k={largest_k})')
+    ax_qps.grid(True, alpha=0.3)
+    ax_qps.legend()
+    
+    # Configure time plot  
+    ax_time.set_xlabel('Recall')
+    ax_time.set_ylabel('Average Query Time (ms)')
+    ax_time.set_title(f'Query Time vs Recall (k={largest_k})')
+    ax_time.grid(True, alpha=0.3)
+    ax_time.legend()
+    
+    plt.tight_layout()
+    qps_time_plot_path = os.path.join(output_dir, f'benchmark_qps_time_recall_{dataset_name}.png')
+    plt.savefig(qps_time_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
     plt.close('all')  # Close the original figure
     
     print(f"Combined plot saved to: {combined_plot_path}")
     print(f"Throughput/Recall plot saved to: {upper_plot_path}")
     print(f"Trade-offs plot saved to: {lower_plot_path}")
+    print(f"QPS/Time vs Recall plot saved to: {qps_time_plot_path}")
     
-    return combined_plot_path, upper_plot_path, lower_plot_path
+    return combined_plot_path, upper_plot_path, lower_plot_path, qps_time_plot_path
 
 def export_to_csv(results, output_dir):
     """Export benchmark results to CSV files."""
@@ -494,10 +561,17 @@ def main():
         print(f"\n✅ Analysis complete!")
         print(f"📊 Plots saved:")
         if isinstance(plot_paths, tuple):
-            combined_plot, upper_plot, lower_plot = plot_paths
-            print(f"   - Combined: {combined_plot}")
-            print(f"   - Throughput/Recall: {upper_plot}")
-            print(f"   - Trade-offs: {lower_plot}")
+            if len(plot_paths) == 4:
+                combined_plot, upper_plot, lower_plot, qps_time_plot = plot_paths
+                print(f"   - Combined: {combined_plot}")
+                print(f"   - Throughput/Recall: {upper_plot}")
+                print(f"   - Trade-offs: {lower_plot}")
+                print(f"   - QPS/Time vs Recall: {qps_time_plot}")
+            else:
+                combined_plot, upper_plot, lower_plot = plot_paths
+                print(f"   - Combined: {combined_plot}")
+                print(f"   - Throughput/Recall: {upper_plot}")
+                print(f"   - Trade-offs: {lower_plot}")
         else:
             print(f"   - {plot_paths}")
         

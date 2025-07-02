@@ -1,0 +1,14 @@
+{
+  "load_cached_data": {
+    "rss_mb": 5429.734375,
+    "vms_mb": 419535.6875
+  },
+  "compute_ground_truth": {
+    "rss_mb": 5438.203125,
+    "vms_mb": 419535.9375
+  },
+  "build_ivf_index": {
+    "rss_mb": 13973.046875,
+    "vms_mb": 451714.84375
+  }
+}

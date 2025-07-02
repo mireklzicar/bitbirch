@@ -29,8 +29,12 @@ def calculate_centroid(linear_sum, n_samples):
 
 def calculate_comp_sim(data):
     """Returns vector of complementary similarities"""
-    n_objects = len(data) - 1
+    # Handle sparse matrices properly
+    n_objects = (data.shape[0] if hasattr(data, 'shape') else len(data)) - 1
     c_total = np.sum(data, axis = 0)
+    # Convert sparse matrix sum result to dense array if needed
+    if hasattr(c_total, 'A1'):
+        c_total = c_total.A1
     comp_matrix = c_total - data
     a = comp_matrix * (comp_matrix - 1)/2
     comp_sims = np.sum(a, axis = 1)/np.sum((a + comp_matrix * (n_objects - comp_matrix)), axis = 1)
